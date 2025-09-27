@@ -1,225 +1,243 @@
 import numpy as np
 from IPython.display import display, clear_output
 import ipywidgets as widgets
+from pymongo import MongoClient
+from bson.objectid import ObjectId
+import datetime
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from sklearn.model_selection import train_test_split
 
-print("🏠 Enhanced Floor Plan Designer with Custom Grid Size")
-print("Select a room type and click on the grid to add rooms.")
+# --- MongoDB Connection ---
+# Paste your MongoDB Atlas connection string here
+# client = MongoClient('mongodb+srv://<username>:<password>@yourcluster.mongodb.net/?retryWrites=true&w=majority')
+# For local testing:
+client = MongoClient('mongodb+srv://Meganath:1pFapaGKv5iRk6KR@cluster0.stpmtjx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0')
 
-# Initialize the grid with default size
+db = client['architectural_floor_plans']
+collection = db['plans']
+
+print("🏠 AI-Powered Floor Plan Designer with Custom Naming & Enhanced Suggestions")
+
+# Initialize grid and room properties
 grid_size = 8
 grid = np.zeros((grid_size, grid_size), dtype=int)
-
-# Room types with darker colors for better visibility
 room_types = ["Empty", "Living Room", "Bedroom", "Kitchen", "Bathroom", "Dining Room", "Office", "Garage"]
 room_short_names = ["E", "L", "B", "K", "T", "D", "O", "G"]
 room_colors = ["white", "#4682B4", "#32CD32", "#FF8C00", "#FF69B4", "#FFFF00", "#9370DB", "#A9A9A9"]
-
-# Text colors that contrast with the background
 text_colors = ["black", "white", "black", "black", "black", "black", "black", "black"]
+selected_cell = None
 
-# Create widgets
-room_selector = widgets.Dropdown(
-    options=room_types[1:],
-    value='Living Room',
-    description='Room Type:',
-    style={'description_width': 'initial'}
-)
+# --- TinyML Model Simulation (No changes here) ---
+def generate_training_data(num_samples=5000):
+    X, y, num_room_types = [], [], len(room_types)
+    for _ in range(num_samples):
+        neighbors = np.random.randint(0, num_room_types, size=4)
+        target_room = 0
+        if room_types.index("Bedroom") in neighbors and np.random.rand() > 0.3: target_room = room_types.index("Bathroom")
+        elif room_types.index("Kitchen") in neighbors and np.random.rand() > 0.4: target_room = room_types.index("Dining Room")
+        elif room_types.index("Living Room") in neighbors and np.random.rand() > 0.7: target_room = room_types.index("Dining Room")
+        else: target_room = np.random.choice([room_types.index("Bedroom"), room_types.index("Office"), room_types.index("Living Room")])
+        X.append(neighbors)
+        y.append(target_room)
+    X_one_hot = tf.keras.utils.to_categorical(X, num_classes=num_room_types).reshape(-1, 4 * num_room_types)
+    y_one_hot = tf.keras.utils.to_categorical(y, num_classes=num_room_types)
+    return X_one_hot, y_one_hot
 
-# Custom grid size input instead of fixed options
-grid_size_input = widgets.IntText(
-    value=8,
-    min=4,
-    max=100,
-    description='Grid Size:',
-    style={'description_width': 'initial'}
-)
+def create_tinyml_model():
+    model = Sequential([
+        Dense(16, activation='relu', input_shape=(4 * len(room_types),)),
+        Dense(16, activation='relu'),
+        Dense(len(room_types), activation='softmax')])
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    return model
 
-apply_size_btn = widgets.Button(description="Apply Grid Size", button_style='info')
+X_data, y_data = generate_training_data()
+tinyml_model = create_tinyml_model()
+tinyml_model.fit(X_data, y_data, epochs=20, batch_size=32, verbose=0)
+print("✅ TinyML model trained and ready.")
+
+
+# --- Widgets ---
+room_selector = widgets.Dropdown(options=room_types[1:], value='Living Room', description='Room Type:')
+grid_size_input = widgets.IntText(value=8, min=4, max=100, description='Grid Size:')
+apply_size_btn = widgets.Button(description="Apply Size", button_style='info')
 clear_btn = widgets.Button(description="Clear All", button_style='danger')
+plan_name_input = widgets.Text(value='', placeholder='Name your floor plan', description='Plan Name:') # NEW WIDGET
+save_btn = widgets.Button(description="Save to DB", button_style='success')
+load_btn = widgets.Button(description="Load from DB", button_style='primary')
+ai_suggest_btn = widgets.Button(description="💡 AI Suggest", button_style='warning', tooltip="Click an empty cell, then this button")
+plan_selector = widgets.Dropdown(description='Saved Plans:')
+suggestion_box = widgets.HBox([]) # NEW WIDGET for AI suggestion buttons
 status_text = widgets.Output()
 
-# Function to update the display
+
+# --- Core Functions ---
+
+def update_plan_selector():
+    plans = list(collection.find({}, {"name": 1, "timestamp": 1}))
+    plan_options = [("Select a plan", None)] + [(p.get('name', 'Unnamed'), p['_id']) for p in plans]
+    plan_selector.options = plan_options
+
+def on_save_clicked(b):
+    """Saves the plan with a custom name or a timestamp fallback."""
+    plan_name = plan_name_input.value.strip() # Get name from the new text box
+    if not plan_name: # If the user left it blank
+        plan_name = "FloorPlan_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    
+    plan_data = {"name": plan_name, "grid_size": grid_size, "grid": grid.tolist(), "timestamp": datetime.datetime.now()}
+    collection.insert_one(plan_data)
+    update_plan_selector()
+    with status_text:
+        clear_output()
+        print(f"✅ Plan '{plan_name}' saved successfully!")
+    plan_name_input.value = '' # Clear the input box after saving
+    update_display()
+
+def on_ai_suggest_clicked(b):
+    """NEW: Generates and displays the top 3 room suggestions as buttons."""
+    global grid
+    suggestion_box.children = [] # Clear previous suggestions
+    if selected_cell:
+        i, j = selected_cell
+        if grid[i, j] == 0:
+            neighbors = []
+            for di, dj in [(-1, 0), (0, 1), (1, 0), (0, -1)]:
+                ni, nj = i + di, j + dj
+                neighbors.append(grid[ni, nj] if 0 <= ni < grid_size and 0 <= nj < grid_size else 0)
+            
+            input_data = tf.keras.utils.to_categorical([neighbors], num_classes=len(room_types)).reshape(1, -1)
+            prediction = tinyml_model.predict(input_data, verbose=0)
+            
+            # Get top 3 suggestions, excluding "Empty"
+            sorted_indices = np.argsort(prediction[0])[::-1]
+            top_suggestions = []
+            for idx in sorted_indices:
+                if idx != 0: # Exclude "Empty"
+                    top_suggestions.append(idx)
+                if len(top_suggestions) == 3:
+                    break
+
+            # Create a button for each suggestion
+            suggestion_buttons = []
+            for room_idx in top_suggestions:
+                btn = widgets.Button(description=room_types[room_idx], button_style='info')
+                
+                def on_suggestion_chosen(b):
+                    chosen_room_name = b.description
+                    chosen_room_idx = room_types.index(chosen_room_name)
+                    grid[i, j] = chosen_room_idx
+                    suggestion_box.children = [] # Hide buttons after choice
+                    update_button_grid()
+                    update_display()
+                
+                btn.on_click(on_suggestion_chosen)
+                suggestion_buttons.append(btn)
+            
+            suggestion_box.children = suggestion_buttons # Display the new buttons
+
+def on_cell_click(btn):
+    """Optimized cell click handler."""
+    global grid, selected_cell
+    i, j = btn.i, btn.j
+    selected_cell = (i, j)
+    suggestion_box.children = [] # Clear AI suggestions when user clicks elsewhere
+    
+    selected_room_idx = room_types.index(room_selector.value)
+    new_room_idx = selected_room_idx if grid[i, j] != selected_room_idx else 0
+    grid[i, j] = new_room_idx
+
+    # Direct button update for speed
+    btn.description = room_short_names[new_room_idx]
+    btn.style.button_color = room_colors[new_room_idx]
+    btn.style.text_color = text_colors[new_room_idx]
+    
+    update_display()
+
+# --- Other UI and Helper Functions (Largely Unchanged) ---
+
+def on_load_clicked(b):
+    global grid_size, grid
+    plan_id = plan_selector.value
+    if plan_id:
+        plan_data = collection.find_one({"_id": ObjectId(plan_id)})
+        if plan_data:
+            grid_size = plan_data['grid_size']
+            grid = np.array(plan_data['grid'])
+            grid_size_input.value = grid_size
+            update_button_grid()
+            update_display()
+            with status_text:
+                clear_output()
+                print(f"✅ Plan '{plan_data.get('name', 'Unnamed')}' loaded.")
+
 def update_display():
     with status_text:
         clear_output()
-
-        # Create a large visual representation of the grid
-        html_grid = "<div style='font-family: monospace; font-size: 24px; line-height: 1.2;'>"
-        html_grid += "<h3>🏠 YOUR FLOOR PLAN</h3>"
-        html_grid += "<table style='border-collapse: collapse; border: 3px solid black; background-color: white;'>"
-
+        html_grid = "<h3>🏠 YOUR FLOOR PLAN</h3><table style='border-collapse: collapse; border: 3px solid black;'>"
         for i in range(grid_size):
             html_grid += "<tr>"
             for j in range(grid_size):
                 room_idx = grid[i, j]
-                bg_color = room_colors[room_idx]
-                text_color = text_colors[room_idx]
-                html_grid += f"<td style='border: 2px solid black; width: 50px; height: 50px; text-align: center; vertical-align: middle; background-color: {bg_color}; color: {text_color};'><b>{room_short_names[room_idx]}</b></td>"
+                border_style = "3px solid #0000FF" if selected_cell == (i, j) else "2px solid black"
+                html_grid += f"<td style='border: {border_style}; width: 40px; height: 40px; text-align: center; background-color: {room_colors[room_idx]}; color: {text_colors[room_idx]};'><b>{room_short_names[room_idx]}</b></td>"
             html_grid += "</tr>"
-
         html_grid += "</table>"
-
-        # Add legend
-        html_grid += "<div style='margin-top: 20px;'><h4>Legend:</h4><table>"
-        for i, room in enumerate(room_types):
-            if i > 0:  # Skip Empty
-                html_grid += f"<tr><td style='background-color: {room_colors[i]}; width: 30px; height: 30px; text-align: center; border: 1px solid black; color: {text_colors[i]};'><b>{room_short_names[i]}</b></td><td style='padding-left: 10px;'>{room}</td></tr>"
-        html_grid += "</table></div>"
-
-        # Count rooms
-        room_counts = {room: 0 for room in room_types[1:]}
-        for i in range(grid_size):
-            for j in range(grid_size):
-                room_idx = grid[i, j]
-                if room_idx > 0:
-                    room_name = room_types[room_idx]
-                    room_counts[room_name] += 1
-
-        html_grid += "<div style='margin-top: 20px;'><h4>Room Counts:</h4><ul>"
-        for room, count in room_counts.items():
-            if count > 0:
-                html_grid += f"<li>{room}: {count} cells</li>"
-
-        total_rooms = sum(room_counts.values())
-        html_grid += f"<li><b>Total rooms: {total_rooms}</b></li>"
-        html_grid += "</ul></div>"
-
-        html_grid += "</div>"
-
-        # Display the HTML grid
+        # (You can add legend/room counts back here if desired)
         display(widgets.HTML(value=html_grid))
 
-# Function to handle button clicks
-def on_cell_click(btn):
-    i, j = btn.i, btn.j
-
-    selected_room = room_selector.value
-    room_idx = room_types.index(selected_room)
-
-    grid[i, j] = room_idx
-
-    # Update button appearance
-    btn.description = room_short_names[room_idx]
-    btn.style.button_color = room_colors[room_idx]
-
-    # Update text color for better contrast
-    if room_idx > 0:  # Not empty
-        btn.style.text_color = text_colors[room_idx]
-    else:
-        btn.style.text_color = "black"
-
-    # Update display
-    update_display()
-
-# Function to clear the grid
-def on_clear_clicked(btn):
+def on_clear_clicked(b):
     global grid
     grid = np.zeros((grid_size, grid_size), dtype=int)
-
-    # Reset all buttons
-    for i in range(grid_size):
-        for j in range(grid_size):
-            index = i * grid_size + j
-            button_grid.children[index].description = "E"
-            button_grid.children[index].style.button_color = "white"
-            button_grid.children[index].style.text_color = "black"
-
+    update_button_grid()
     update_display()
-
-# Function to change grid size
-def on_apply_size_clicked(btn):
+    
+def on_apply_size_clicked(b):
     global grid_size, grid
-    new_size = grid_size_input.value
-
-    if new_size < 4:
-        new_size = 4
-    elif new_size > 100:
-        new_size = 100
-
-    grid_size = new_size
+    grid_size = grid_size_input.value
     grid = np.zeros((grid_size, grid_size), dtype=int)
-
-    # Update the input field to reflect any corrections
-    grid_size_input.value = grid_size
-
-    # Recreate the button grid
     update_button_grid()
     update_display()
 
-# Function to update button grid
 def update_button_grid():
-    # Clear existing buttons
-    button_grid.children = []
-
-    # Update layout
-    button_grid.layout.grid_template_columns = f"repeat({grid_size}, 50px)"
-    button_grid.layout.width = f'{grid_size * 55}px'
-
-    # Create new buttons
+    buttons = []
     for i in range(grid_size):
         for j in range(grid_size):
-            room_idx = grid[i, j]
             btn = widgets.Button(
-                description=room_short_names[room_idx],
-                layout=widgets.Layout(width='45px', height='45px'),
-                style={'button_color': room_colors[room_idx], 'text_color': text_colors[room_idx]}
+                description=room_short_names[grid[i, j]],
+                layout=widgets.Layout(width='40px', height='40px'),
+                style={'button_color': room_colors[grid[i, j]], 'text_color': text_colors[grid[i, j]]}
             )
-            btn.i = i
-            btn.j = j
+            btn.i, btn.j = i, j
             btn.on_click(on_cell_click)
-            button_grid.children += (btn,)
+            buttons.append(btn)
+    button_grid.children = buttons
+    button_grid.layout.grid_template_columns = f"repeat({grid_size}, 45px)"
+    button_grid.layout.width = f'{grid_size * 50}px'
 
-# Create interactive buttons for grid cells
-button_grid = widgets.GridBox(
-    children=[],
-    layout=widgets.Layout(
-        grid_template_columns=f"repeat({grid_size}, 50px)",
-        width=f'{grid_size * 55}px',
-        border='2px solid black',
-        padding='10px',
-        background_color='white'
-    )
-)
-
-# Initialize buttons
+# --- UI Layout ---
+button_grid = widgets.GridBox(children=[], layout=widgets.Layout())
 update_button_grid()
+update_plan_selector()
 
-# Display the UI
+# Display UI Components in order
 display(widgets.HBox([room_selector, grid_size_input, apply_size_btn]))
-display(widgets.HTML(value="<h3>Click on the grid below to add rooms:</h3>"))
+display(widgets.HTML(value="<h3>Click on the grid to add/remove rooms:</h3>"))
 display(button_grid)
-display(widgets.HBox([clear_btn]))
+display(widgets.HBox([clear_btn, plan_selector, load_btn, ai_suggest_btn]))
+display(widgets.HBox([plan_name_input, save_btn])) # NEW layout for saving
+display(suggestion_box) # Box for AI suggestion buttons
 display(status_text)
 
-# Set up observers
+# Observers
 apply_size_btn.on_click(on_apply_size_clicked)
 clear_btn.on_click(on_clear_clicked)
+save_btn.on_click(on_save_clicked)
+load_btn.on_click(on_load_clicked)
+ai_suggest_btn.on_click(on_ai_suggest_clicked)
 
-# Initialize display
 update_display()
 
-# Add instructions
-instructions = """
-<div style="background-color: #f0f8ff; padding: 15px; border-radius: 10px; margin-top: 20px;">
-<h3>📋 Instructions:</h3>
-<ol>
-<li>Select a room type from the dropdown</li>
-<li>Enter a custom grid size (4-20) and click "Apply Grid Size"</li>
-<li>Click on a grid cell to place that room type</li>
-<li>Click 'Clear All' to start over</li>
-<li>The display above shows your current floor plan</li>
-</ol>
-<p><strong>Room Types:</strong></p>
-<ul>
-<li><span style="background-color: #4682B4; color: white; padding: 2px 5px;">L</span> Living Room</li>
-<li><span style="background-color: #32CD32; color: black; padding: 2px 5px;">B</span> Bedroom</li>
-<li><span style="background-color: #FF8C00; color: black; padding: 2px 5px;">K</span> Kitchen</li>
-<li><span style="background-color: #FF69B4; color: black; padding: 2px 5px;">T</span> Bathroom</li>
-<li><span style="background-color: #FFFF00; color: black; padding: 2px 5px;">D</span> Dining Room</li>
-<li><span style="background-color: #9370DB; color: black; padding: 2px 5px;">O</span> Office</li>
-<li><span style="background-color: #A9A9A9; color: black; padding: 2px 5px;">G</span> Garage</li>
-</ul>
-</div>
-"""
 
 display(widgets.HTML(value=instructions))
