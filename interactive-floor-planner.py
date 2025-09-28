@@ -13,7 +13,7 @@ from sklearn.model_selection import train_test_split
 # Paste your MongoDB Atlas connection string here
 # client = MongoClient('mongodb+srv://<username>:<password>@yourcluster.mongodb.net/?retryWrites=true&w=majority')
 # For local testing:
-client = MongoClient('mongodb+srv://Meganath:1pFapaGKv5iRk6KR@cluster0.stpmtjx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0')
+client = MongoClient('mongodb+srv://Username:Password@ClusterName.mongodb.net/?retryWrites=true&w=majority&appName=ClusterName')
 
 db = client['architectural_floor_plans']
 collection = db['plans']
@@ -241,3 +241,4 @@ update_display()
 
 
 display(widgets.HTML(value=instructions))
+
