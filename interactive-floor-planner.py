@@ -10,8 +10,6 @@ from tensorflow.keras.layers import Dense
 from sklearn.model_selection import train_test_split
 
 # --- MongoDB Connection ---
-# Paste your MongoDB Atlas connection string here
-# client = MongoClient('mongodb+srv://<username>:<password>@yourcluster.mongodb.net/?retryWrites=true&w=majority')
 # For local testing:
 client = MongoClient('mongodb+srv://Username:Password@ClusterName.mongodb.net/?retryWrites=true&w=majority&appName=ClusterName')
 
@@ -241,4 +239,5 @@ update_display()
 
 
 display(widgets.HTML(value=instructions))
+
 
